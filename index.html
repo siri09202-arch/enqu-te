@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>楽曲アンケート リアルタイム票数</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#26334f;--text:#eef4ff;--muted:#9eacc7;--accent:#6ea8fe;--good:#55d187;--warn:#ffcc66}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(160deg,#09101f,#111a2e);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1100px;margin:auto;padding:18px}
+header,.card{background:rgba(18,26,45,.94);border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 35px #0004}
+header{padding:22px;margin-bottom:14px}h1{margin:0 0 8px;font-size:clamp(22px,4vw,34px)}p{margin:5px 0;color:var(--muted)}
+.status{display:flex;gap:10px;flex-wrap:wrap;margin-top:15px}.pill{padding:7px 11px;border-radius:999px;background:#1a2640;color:#cfe0ff;font-size:13px}.ok{color:#9bf0b8}.bad{color:#ff9b9b}
+.controls{display:flex;gap:9px;flex-wrap:wrap;margin:14px 0}.controls input,.controls select,.controls button{background:#0c1426;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.controls button{cursor:pointer}.controls button:hover{border-color:var(--accent)}
+.card{padding:14px;margin-top:14px;overflow:hidden}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.metric{background:#0d1528;border:1px solid var(--line);border-radius:13px;padding:14px}.metric b{display:block;font-size:27px}.metric span{color:var(--muted);font-size:12px}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:650px}th,td{padding:12px 10px;border-bottom:1px solid var(--line);text-align:left}th{color:#aebdde;font-size:12px;position:sticky;top:0;background:#121a2d}td.num{text-align:right;font-variant-numeric:tabular-nums}.total{font-weight:800;font-size:17px;color:#fff}.bar{height:8px;background:#1c2942;border-radius:99px;overflow:hidden}.bar>i{display:block;height:100%;background:var(--accent);border-radius:99px}
+details{margin-top:14px}.settings{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.settings label{display:block;font-size:12px;color:var(--muted)}.settings input,.settings select{width:100%;margin-top:5px}
+small{color:var(--muted)}
+@media(max-width:700px){main{padding:10px}.summary{grid-template-columns:1fr 1fr}.settings{grid-template-columns:1fr}.metric b{font-size:23px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>🎵 楽曲アンケート リアルタイム票数</h1>
+<p>Googleスプレッドシートの公開CSVを読み込み、質問1＋質問2の票数を楽曲ごとに合算します。</p>
+<div class="status">
+<span class="pill" id="state">● 起動中</span>
+<span class="pill">自動更新：<b id="intervalText">30秒</b></span>
+<span class="pill">最終更新：<b id="updated">---</b></span>
+</div>
+</header>
+
+<div class="controls">
+<input id="search" placeholder="楽曲名を検索">
+<select id="sort"><option value="total">総合計票数順</option><option value="name">楽曲名順</option><option value="q1">質問1票数順</option><option value="q2">質問2票数順</option></select>
+<button id="refresh">↻ 今すぐ更新</button>
+</div>
+
+<section class="card">
+<div class="summary">
+<div class="metric"><span>楽曲数</span><b id="songCount">0</b></div>
+<div class="metric"><span>質問1 総票数</span><b id="q1Total">0</b></div>
+<div class="metric"><span>質問2 総票数</span><b id="q2Total">0</b></div>
+</div>
+<div style="margin-top:10px" class="metric"><span>全楽曲・質問1＋質問2 総合計</span><b id="grandTotal">0</b></div>
+</section>
+
+<section class="card">
+<div class="table-wrap">
+<table>
+<thead><tr><th>楽曲</th><th class="num">質問1</th><th class="num">質問2</th><th class="num">総合計</th><th style="width:25%">比率</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5">CSVを読み込んでいます…</td></tr></tbody>
+</table>
+</div>
+</section>
+
+<details class="card">
+<summary>⚙ CSV設定・診断</summary>
+<p>通常は自動判定されます。列名が特殊な場合だけ、ここで指定してください。</p>
+<div class="settings">
+<label>楽曲列<select id="songCol"><option value="">自動判定</option></select></label>
+<label>質問1列<select id="q1Col"><option value="">自動判定</option></select></label>
+<label>質問2列<select id="q2Col"><option value="">自動判定</option></select></label>
+</div>
+<div style="margin-top:12px"><small id="diagnostic">---</small></div>
+</details>
+
+<p style="text-align:center;margin:18px 0"><small>データ源：Googleスプレッドシート公開CSV　｜　このページは回答データを書き換えません。</small></p>
+</main>
+
+<script>
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS-r_k1mJDdRrd_Cs7gI5GrSUh5H2dFOYjKA4kLe8jPvmHLyFO5JaIP72q8ZynryiuSk7NRPBB-9pGU/pub?output=csv";
+const REFRESH_MS = 30000;
+
+let rawRows=[], headers=[];
+const $=id=>document.getElementById(id);
+$("intervalText").textContent=(REFRESH_MS/1000)+"秒";
+
+function parseCSV(text){
+  const rows=[]; let row=[], cell="", quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i], n=text[i+1];
+    if(quoted){
+      if(c=='"' && n=='"'){cell+='"';i++}
+      else if(c=='"') quoted=false;
+      else cell+=c;
+    }else{
+      if(c=='"') quoted=true;
+      else if(c==','){row.push(cell);cell=""}
+      else if(c=='\n'){row.push(cell);rows.push(row);row=[];cell=""}
+      else if(c!='\r') cell+=c;
+    }
+  }
+  if(cell.length||row.length){row.push(cell);rows.push(row)}
+  return rows.filter(r=>r.some(v=>String(v).trim()!==""));
+}
+function norm(s){return String(s??"").replace(/\s+/g,"").toLowerCase();}
+function autoCol(type){
+  const hs=headers.map(norm);
+  const rules={
+    song:["楽曲","曲名","曲","music","song","title"],
+    q1:["質問1","質問１","q1","question1","question１"],
+    q2:["質問2","質問２","q2","question2","question２"]
+  }[type];
+  let i=hs.findIndex(h=>rules.some(x=>h===norm(x)));
+  if(i>=0)return i;
+  i=hs.findIndex(h=>rules.some(x=>h.includes(norm(x))));
+  return i>=0?i:-1;
+}
+function fillSelect(sel,selected){
+  sel.innerHTML='<option value="">自動判定</option>'+headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join("");
+  if(selected>=0)sel.value=selected;
+}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
+function isNumeric(v){return /^-?\d+(?:\.\d+)?$/.test(String(v).trim());}
+
+function countCell(value){
+  const s=String(value??"").trim();
+  if(!s)return 0;
+  // 「3」「3票」などは票数として扱う
+  if(isNumeric(s))return Math.max(0,Number(s));
+  const m=s.match(/(\d+(?:\.\d+)?)\s*票/);
+  if(m)return Number(m[1]);
+  // Googleフォームの回答CSVで、選択肢そのものが入っている場合は「1回答=1票」
+  return 1;
+}
+
+function build(){
+  if(!rawRows.length)return;
+  const songI=$("songCol").value===""?autoCol("song"):Number($("songCol").value);
+  const q1I=$("q1Col").value===""?autoCol("q1"):Number($("q1Col").value);
+  const q2I=$("q2Col").value===""?autoCol("q2"):Number($("q2Col").value);
+
+  $("diagnostic").textContent=`検出：楽曲=${songI>=0?headers[songI]:"未検出"} / 質問1=${q1I>=0?headers[q1I]:"未検出"} / 質問2=${q2I>=0?headers[q2I]:"未検出"} / 回答行=${rawRows.length}`;
+
+  if(songI<0||q1I<0||q2I<0){
+    $("rows").innerHTML='<tr><td colspan="5">列を自動判定できませんでした。「CSV設定・診断」から3列を指定してください。</td></tr>';
+    return;
+  }
+  const map=new Map();
+  for(const r of rawRows){
+    const song=String(r[songI]??"").trim();
+    if(!song)continue;
+    const q1=countCell(r[q1I]),q2=countCell(r[q2I]);
+    if(!map.has(song))map.set(song,{q1:0,q2:0});
+    const x=map.get(song);x.q1+=q1;x.q2+=q2;
+  }
+  let data=[...map.entries()].map(([name,x])=>({name,...x,total:x.q1+x.q2}));
+  const q=$("search").value.trim().toLowerCase();
+  if(q)data=data.filter(x=>x.name.toLowerCase().includes(q));
+  const sort=$("sort").value;
+  data.sort((a,b)=>sort==="name"?a.name.localeCompare(b.name,"ja"):sort==="q1"?b.q1-a.q1:sort==="q2"?b.q2-a.q2:b.total-a.total);
+
+  const q1Total=data.reduce((s,x)=>s+x.q1,0),q2Total=data.reduce((s,x)=>s+x.q2,0),grand=q1Total+q2Total,max=Math.max(1,...data.map(x=>x.total));
+  $("songCount").textContent=data.length;$("q1Total").textContent=q1Total.toLocaleString();$("q2Total").textContent=q2Total.toLocaleString();$("grandTotal").textContent=grand.toLocaleString();
+  $("rows").innerHTML=data.length?data.map(x=>`<tr><td>${esc(x.name)}</td><td class="num">${x.q1.toLocaleString()}</td><td class="num">${x.q2.toLocaleString()}</td><td class="num total">${x.total.toLocaleString()}</td><td><div class="bar"><i style="width:${x.total/max*100}%"></i></div></td></tr>`).join(""):'<tr><td colspan="5">該当する楽曲がありません。</td></tr>';
+}
+
+async function load(){
+  $("state").textContent="● 更新中";
+  $("state").className="pill";
+  try{
+    // キャッシュ回避用。公開CSV自体は読み取り専用。
+    const url=CSV_URL+(CSV_URL.includes("?")?"&":"?")+"_="+Date.now();
+    const res=await fetch(url,{cache:"no-store"});
+    if(!res.ok)throw new Error("HTTP "+res.status);
+    const text=await res.text();
+    const rows=parseCSV(text);
+    if(rows.length<2)throw new Error("CSVに回答データがありません");
+    headers=rows[0];rawRows=rows.slice(1);
+    const prev=[$("songCol").value,$("q1Col").value,$("q2Col").value];
+    fillSelect($("songCol"),autoCol("song"));fillSelect($("q1Col"),autoCol("q1"));fillSelect($("q2Col"),autoCol("q2"));
+    if(prev[0]!=="")$("songCol").value=prev[0];
+    if(prev[1]!=="")$("q1Col").value=prev[1];
+    if(prev[2]!=="")$("q2Col").value=prev[2];
+    build();
+    $("updated").textContent=new Date().toLocaleString("ja-JP");
+    $("state").textContent="● 接続中";
+    $("state").className="pill ok";
+  }catch(e){
+    console.error(e);
+    $("state").textContent="● 読み込み失敗";
+    $("state").className="pill bad";
+    $("diagnostic").textContent="エラー："+e.message+"。Googleスプレッドシートが「ウェブに公開」されているか確認してください。";
+  }
+}
+$("refresh").onclick=load;$("search").oninput=build;$("sort").onchange=build;
+["songCol","q1Col","q2Col"].forEach(id=>$(id).onchange=build);
+load();setInterval(load,REFRESH_MS);
+</script>
+</body>
+</html>
