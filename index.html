@@ -629,7 +629,8 @@
                                 });
                                 if (!questionFields.length) throw new Error('集計対象の質問列が見つかりません');
 
-                                const newQuestions = [];
+                                // 質問ごとの個別集計を作成
+                                const individualQuestions = [];
                                 questionFields.forEach(qTitle => {
                                     const counts = new Map();
                                     rows.forEach(row => {
@@ -637,19 +638,68 @@
                                         if (!raw) return;
 
                                         // Googleフォームのチェックボックス回答にも対応。
-                                        // カンマ・読点・改行で複数選択肢が格納されている場合は個別集計。
-                                        const answers = raw.split(/\s*[,、]\s*|\r?\n/).map(normalizeCell).filter(Boolean);
-                                        answers.forEach(answer => counts.set(answer, (counts.get(answer) || 0) + 1));
+                                        const answers = raw.split(/\s*[,、]\s*|\r?\n/)
+                                            .map(normalizeCell)
+                                            .filter(Boolean);
+                                        answers.forEach(answer => {
+                                            counts.set(answer, (counts.get(answer) || 0) + 1);
+                                        });
                                     });
 
                                     const sorted = [...counts.entries()].sort((a,b) => b[1] - a[1]);
                                     if (sorted.length) {
-                                        newQuestions.push({
+                                        individualQuestions.push({
                                             title: qTitle,
                                             options: sorted.map(x => x[0]),
                                             votes: sorted.map(x => x[1])
                                         });
                                     }
+                                });
+
+                                // 選択肢構成が同じ質問を自動グループ化し、票数を合算する。
+                                // 例：質問1=A/B/C、質問2=A/B/C → A/B/C の合計票数を生成。
+                                const optionGroups = new Map();
+                                individualQuestions.forEach(q => {
+                                    const optionKey = [...q.options]
+                                        .map(normalizeCell)
+                                        .sort((a,b) => a.localeCompare(b, 'ja'))
+                                        .join('\u001f');
+                                    if (!optionGroups.has(optionKey)) optionGroups.set(optionKey, []);
+                                    optionGroups.get(optionKey).push(q);
+                                });
+
+                                const newQuestions = [];
+                                optionGroups.forEach(group => {
+                                    // 同じ選択肢構成の質問が2つ以上ある場合のみ合算グラフを追加
+                                    if (group.length >= 2) {
+                                        const combinedCounts = new Map();
+                                        const questionNames = [];
+
+                                        group.forEach(q => {
+                                            questionNames.push(q.title);
+                                            q.options.forEach((option, i) => {
+                                                const key = normalizeCell(option);
+                                                combinedCounts.set(
+                                                    key,
+                                                    (combinedCounts.get(key) || 0) + (q.votes[i] || 0)
+                                                );
+                                            });
+                                        });
+
+                                        const sortedCombined = [...combinedCounts.entries()]
+                                            .sort((a,b) => b[1] - a[1]);
+
+                                        newQuestions.push({
+                                            title: `${questionNames.join(' ＋ ')}（合算）`,
+                                            options: sortedCombined.map(x => x[0]),
+                                            votes: sortedCombined.map(x => x[1]),
+                                            isCombined: true,
+                                            sourceQuestions: questionNames
+                                        });
+                                    }
+
+                                    // 個別質問も残す
+                                    group.forEach(q => newQuestions.push(q));
                                 });
 
                                 if (!newQuestions.length) throw new Error('回答から集計できるデータがありません');
